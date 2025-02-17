@@ -1,4 +1,5 @@
 - See the mgtsvr repo readme for aws config and build/deploy pipeline info
+- deploy.sh requires github ssh key to be present (and configured in github)
 - Manual steps to run Aqua app locally (this is probably broken now)
   - Create FastAPI app
     Python is installed. But need to install python3.10-venv for virtual env

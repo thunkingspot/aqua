@@ -3,12 +3,15 @@
       DEBUG_MODE=false
     fi
 
+    # Start the SSH agent and add the SSH key
+    eval "$(ssh-agent -s)"
+    ssh-add ~/.ssh/id_ed25519
+
     # Define temporary directory
     TEMP_DIR=$(mktemp -d)
+    git clone git@github.com:thunkingspot/aqua.git $TEMP_DIR
 
-    cd /home/ubuntu/src/examples/aqua
     sudo docker stop $(sudo docker ps -a -q --filter ancestor=aqua-app)
-    #sudo docker rm $(sudo docker ps -a -q --filter ancestor=aqua-app)
     containers=$(sudo docker ps -a -q --filter ancestor=aqua-app)
     if [ $(echo "$containers" | wc -l) -gt 1 ]; then
       sudo docker rm $(echo "$containers" | tail -n +2)
