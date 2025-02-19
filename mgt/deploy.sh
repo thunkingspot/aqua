@@ -3,12 +3,6 @@
       DEBUG_MODE=false
     fi
 
-    sudo docker stop $(sudo docker ps -a -q --filter ancestor=aqua-app)
-    containers=$(sudo docker ps -a -q --filter ancestor=aqua-app)
-    if [ $(echo "$containers" | wc -l) -gt 1 ]; then
-      sudo docker rm $(echo "$containers" | tail -n +2)
-    fi
-    #sudo docker images -q aqua-app | tail -n +2 | xargs sudo docker rmi
     sudo docker build -t aqua-app .
 
     if [ "$DEBUG_MODE" == "true" ]; then
