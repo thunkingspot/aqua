@@ -26,8 +26,10 @@ app = FastAPI()
 dynamodb = boto3.resource('dynamodb', region_name='us-west-2')
 s3 = boto3.client('s3')
 
+logger.debug("Checking for debug mode.")
 # Start the debugpy server if DEBUG_MODE is set to true
 if os.getenv("DEBUG_MODE", "false").lower() == "true":
+    logger.debug("Debug mode true.")
     debugpy.listen(("0.0.0.0", 5678))
     print("Waiting for debugger attach...")
     debugpy.wait_for_client()
