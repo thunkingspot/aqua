@@ -3,7 +3,6 @@
       DEBUG_MODE=false
     fi
 
-
     sudo docker build -t aqua-app .
 
     if [ "$DEBUG_MODE" == "true" ]; then
