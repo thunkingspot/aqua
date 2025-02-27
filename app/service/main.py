@@ -24,7 +24,7 @@ app = FastAPI()
 
 # Create a Boto3 client for interacting with S3 and dynamodb
 #dynamodb = boto3.resource('dynamodb', region_name='us-west-2')
-#s3 = boto3.client('s3')
+s3 = boto3.client('s3')
 
 logger.debug("Checking for debug mode.")
 # Start the debugpy server if DEBUG_MODE is set to true
