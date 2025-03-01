@@ -1,18 +1,19 @@
 set -e
 
-DEBUG_MODE_PARAM=$1
-IP_ADDR=$2
-
+CONTAINER_NAME=$1
+AWS_KEY_PATH=$2
+AWS_INSTANCE_USER=$3
+AWS_INSTANCE_IP=$4
 DEBUG_MODE=false
-if [ "$DEBUG_MODE_PARAM" == "true" ]; then
+if [ "$5" == "true" ]; then
   DEBUG_MODE=true
 fi
 
-# Define AWS instance details
-CONTAINER_NAME="aqua-app"
-AWS_INSTANCE_USER="ubuntu"
-AWS_INSTANCE_IP=$IP_ADDR
-AWS_KEY_PATH="/home/ubuntu/.ssh/aqua-key2.pem"
+echo "CONTAINER_NAME: $CONTAINER_NAME"
+echo "AWS_KEY_PATH: $AWS_KEY_PATH"
+echo "AWS_INSTANCE_USER: $AWS_INSTANCE_USER"
+echo "AWS_INSTANCE_IP: $AWS_INSTANCE_IP"
+echo "DEBUG_MODE: $DEBUG_MODE"
 
 # Transfer the Docker image to the AWS instance
 scp -i $AWS_KEY_PATH $CONTAINER_NAME.tar $AWS_INSTANCE_USER@$AWS_INSTANCE_IP:/home/$AWS_INSTANCE_USER/
