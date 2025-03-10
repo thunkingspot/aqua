@@ -12,7 +12,7 @@
         "--host",
         "0.0.0.0",
         "--port",
-        "8000",
+        "8001",
         "--timeout-keep-alive",
         "600"
       ],
@@ -21,7 +21,7 @@
         "PYTHONPATH": "${workspaceFolder}/app/service"
       },
       "console": "integratedTerminal",
-      "python": "${workspaceFolder}/app/service/venv/bin/python3"
+      "python": "${workspaceFolder}/venv/bin/python3"
     },
     {
       "name": "Python: Attach to FastAPI Container",

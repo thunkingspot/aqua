@@ -1,0 +1,8 @@
+{
+  "python.testing.pytestArgs": [
+    "tests"
+  ],
+  "python.defaultInterpreterPath": "/home/ubuntu/src/aqua/venv/bin/python",
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true
+}

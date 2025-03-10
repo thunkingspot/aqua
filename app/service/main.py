@@ -1,15 +1,25 @@
+# Copyright 2025 THUNKINGSPOT LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 import boto3
 from fastapi import UploadFile, File, HTTPException
 from botocore.exceptions import BotoCoreError, ClientError
-from PIL import Image
 import io
 import cv2
 import numpy as np
-from shapely.geometry import Polygon
-from shapely.geometry.polygon import LinearRing
-from shapely.ops import triangulate
 import trimesh
 import logging
 import debugpy
@@ -35,151 +45,140 @@ if os.getenv("DEBUG_MODE", "false").lower() == "true":
     debugpy.wait_for_client()
     print("Debugger attached.")
 
-def bitmap_to_triangles_with_holes(binary_image, epsilon=1.0):
-    # Process a binary image to extract contours and triangulate the black regions.
-    # Returns both the triangles and the contours.
+"""
+Given a list of rectangles, merge adjacent rectangles in a greedy fashion.
+Each rectangle is defined as a tuple of two pixels: ((x_min, y_min), (x_max, y_max)).
+Two rectangles are considered mergeable if they share a full edge (either vertical or horizontal)
+so that their union is also a rectangle.
 
-    # Find contours (external and internal)
-    contours, hierarchy = cv2.findContours(binary_image, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+The function returns a new list of rectangles after merging. Rectangles that cannot be
+merged remain in the output.
+"""
+def merge_adjacent_rectangles(rectangles):
+    def can_merge(r1, r2):
+        # r1 and r2 are in the form ((x_min, y_min), (x_max, y_max))
+        (x1_min, y1_min), (x1_max, y1_max) = r1
+        (x2_min, y2_min), (x2_max, y2_max) = r2
 
-    if hierarchy is None:
-        return [], []  # No contours found
+        # Check for horizontal adjacency: same vertical span and one rectangle's right edge touches the other's left edge.
+        if y1_min == y2_min and y1_max == y2_max:
+            if x1_max == x2_min or x2_max == x1_min:
+                return True
 
-    all_triangles = []
-    all_contours = []
+        # Check for vertical adjacency: same horizontal span and one rectangle's bottom edge touches the other's top edge.
+        if x1_min == x2_min and x1_max == x2_max:
+            if y1_max == y2_min or y2_max == y1_min:
+                return True
 
-    # Identify the outer boundary (white region)
-    for idx, contour in enumerate(contours):
-        is_external = hierarchy[0][idx][3] == -1  # Contour with no parent
-        if not is_external:
-            continue  # Skip inner contours
+        return False
 
-        # Simplify the outer boundary
-        simplified_contour = cv2.approxPolyDP(contour, epsilon, True)
-        outer_ring = LinearRing(simplified_contour[:, 0, :])
+    def merge_two(r1, r2):
+        # Merge two rectangles into one by taking the union.
+        (x1_min, y1_min), (x1_max, y1_max) = r1
+        (x2_min, y2_min), (x2_max, y2_max) = r2
+        x_min = min(x1_min, x2_min)
+        y_min = min(y1_min, y2_min)
+        x_max = max(x1_max, x2_max)
+        y_max = max(y1_max, y2_max)
+        return ((x_min, y_min), (x_max, y_max))
 
-        # Identify black regions within the outer boundary
-        holes = []
-        child_idx = hierarchy[0][idx][2]  # First child of the outer boundary
-        while child_idx != -1:
-            child_contour = contours[child_idx]
-            simplified_child = cv2.approxPolyDP(child_contour, epsilon, True)
-            holes.append(LinearRing(simplified_child[:, 0, :]))
-            child_idx = hierarchy[0][child_idx][0]  # Next sibling contour
+    merged = True
+    current_rectangles = rectangles[:]  # Make a copy to avoid modifying the input.
+    
+    # Continue merging until no further adjacent pairs are found.
+    while merged:
+        merged = False
+        new_rectangles = []
+        used = [False] * len(current_rectangles)
+        for i in range(len(current_rectangles)):
+            if used[i]:
+                continue
+            r = current_rectangles[i]
+            for j in range(i + 1, len(current_rectangles)):
+                if used[j]:
+                    continue
+                r2 = current_rectangles[j]
+                if can_merge(r, r2):
+                    # Merge r and r2.
+                    r = merge_two(r, r2)
+                    used[j] = True
+                    merged = True
+            new_rectangles.append(r)
+            used[i] = True
+        current_rectangles = new_rectangles
+    
+    return current_rectangles
 
-        # Create the outer polygon with holes
-        polygon = Polygon(outer_ring, holes)
-        if polygon.is_valid:
-            all_contours.append(polygon)
+"""
+Extrudes a binary image into a 3D cuboid mesh using Trimesh. The approach is 
+tolerant of noise and can handle complex shapes (spaghettification).
+The image is downsampled into cuboids, and adjacent cuboids are merged into larger cuboids.
 
-            # Triangulate the polygon
-            polygon_triangles = triangulate(polygon)
-            for triangle in polygon_triangles:
-                all_triangles.append(np.array(triangle.exterior.coords[:-1]))
+Args:
+    image_path (str): Path to the binary image.
+    cuboid_size (int): Minimum size of each cuboid (in X and Y dimensions). Gives
+        the resolution of the final mesh.
+    extrusion_height (int): Height of extrusion (in Z dimension).
 
-    return all_contours, all_triangles
-
-def extrude_2d_to_3d(triangles_2d, contours, extrusion_depth):
-    vertices = []
-    faces = []
-
-    # Create top and bottom surfaces
-    for triangle in triangles_2d:
-        # Bottom surface (Z=0)
-        base_index = len(vertices)
-        vertices.extend([[x, y, 0] for x, y in triangle])
-
-        # Top surface (Z=extrusion_depth)
-        vertices.extend([[x, y, extrusion_depth] for x, y in triangle])
-
-        # Top and bottom triangles
-        faces.extend([
-            [base_index, base_index + 1, base_index + 2],  # Bottom triangle
-            [base_index + 3, base_index + 4, base_index + 5],  # Top triangle
-        ])
-
-    # Create vertical walls for contours
-    for contour in contours:
-        points = np.array(contour.exterior.coords[:-1])  # Contour points
-
-        for i in range(len(points)):
-            # Connect current point to the next (loop back at the end)
-            next_index = (i + 1) % len(points)
-
-            # Bottom and top vertices
-            bottom_start = len(vertices)
-            vertices.append([points[i][0], points[i][1], 0])  # Bottom current
-            vertices.append([points[next_index][0], points[next_index][1], 0])  # Bottom next
-            vertices.append([points[i][0], points[i][1], extrusion_depth])  # Top current
-            vertices.append([points[next_index][0], points[next_index][1], extrusion_depth])  # Top next
-
-            # Create two triangles for the quad
-            faces.extend([
-                [bottom_start, bottom_start + 1, bottom_start + 2],  # First triangle
-                [bottom_start + 1, bottom_start + 3, bottom_start + 2],  # Second triangle
-            ])
-
-    return np.array(vertices), np.array(faces)
-
-
-def spaghetti_image_to_trimesh(binary_image, voxel_size=1.0, extrusion_height=10.0):
-    """
-    Extrudes a spaghetti-style binary image into a 3D voxel mesh with adjacent voxels merged using Trimesh.
-
-    Args:
-        image_path (str): Path to the binary image.
-        voxel_size (float): Size of each voxel (in X and Y dimensions).
-        extrusion_height (float): Height of extrusion (in Z dimension).
-
-    Returns:
-        trimesh.Trimesh: The 3D mesh object.
-    """
-
+Returns:
+    trimesh.Trimesh: The 3D mesh object.
+"""
+def image_to_trimesh(binary_image, cuboid_size, extrusion_height):
     # Identify black pixels (solid regions)
-    #black_pixels = np.argwhere(binary_image == 0)  # Rows and columns of black pixels
-    # Downsample the image based on voxel size
-    block_size = int(voxel_size)  # Size of each block in pixels
+    # black_pixels = np.argwhere(binary_image == 0)  # Rows and columns of black pixels
+    # Downsample the image based on cuboid size
     downsampled_image = cv2.resize(
         binary_image,
-        (binary_image.shape[1] // block_size, binary_image.shape[0] // block_size),
+        (binary_image.shape[1] // cuboid_size, binary_image.shape[0] // cuboid_size),
         interpolation=cv2.INTER_NEAREST,
     )
 
     # Identify solid blocks (black regions in the downsampled image)
     solid_blocks = np.argwhere(downsampled_image == 0)  # Rows and columns of black pixels
 
-    # Create a list of cuboids (voxels)
-    voxels = []
+    # Turn the solid blocks into a list of rectangles
+    rectangles = []
     for pixel in solid_blocks:
-        x, y = pixel  # Pixel coordinates in the 2D image
+        x, y = pixel
+        x_min = x * cuboid_size
+        x_max = (x + 1) * cuboid_size
+        y_min = y * cuboid_size
+        y_max = (y + 1) * cuboid_size
+        rectangles.append(((x_min, y_min), (x_max, y_max)))
 
-        # Define voxel bounds
-        x_min = x * voxel_size
-        x_max = (x + 1) * voxel_size
-        y_min = y * voxel_size
-        y_max = (y + 1) * voxel_size
-        z_min = 0
-        z_max = extrusion_height
+    # Merge the rectangles where possible
+    merged_rectangles = merge_adjacent_rectangles(rectangles)
 
-        # Create a cuboid for the voxel
-        voxel = trimesh.creation.box(
-            extents=[voxel_size, voxel_size, extrusion_height],
+    # Create a list of cuboids
+    cuboids = []
+    for rect in merged_rectangles:
+        x_min, y_min = rect[0]
+        x_max, y_max = rect[1]
+        cuboids.append(trimesh.creation.box(
+            extents=[x_max - x_min, y_max - y_min, extrusion_height],
             transform=trimesh.transformations.translation_matrix(
                 [(x_min + x_max) / 2, (y_min + y_max) / 2, extrusion_height / 2]
             ),
-        )
-        voxels.append(voxel)
+        ))
 
-    # Merge all voxels into a single mesh
-    combined_mesh = trimesh.util.concatenate(voxels)
-
-    # Remove duplicate internal faces
+    # Merge all cuboids into a single mesh
+    combined_mesh = trimesh.util.concatenate(cuboids)
+    # Attempt to remove duplicate internal faces (unclear if this is effective)
     combined_mesh.merge_vertices()
-    combined_mesh.remove_duplicate_faces()
+    combined_mesh.update_faces(combined_mesh.unique_faces())
 
     return combined_mesh
 
-def transform_image(file: UploadFile, depth: int = 100, tolerance: float = 2.5) -> io.BytesIO:
+"""
+Transforms an uploaded image file into a 3D mesh file (STL format).
+Args:
+    file (UploadFile): Uploaded image file.
+    depth (int): Depth of extrusion (in Z dimension) in pixels.
+    cuboid_size (int): Minimum pixel size of each cuboid (in X and Y dimensions).
+Returns:
+    io.BytesIO: The transformed 3D mesh file.
+"""
+def transform_image(file: UploadFile, depth: int = 100, cuboid_size: int = 1) -> io.BytesIO:
     try:
         # Validate the file type (optional)
         if not file.content_type.startswith("image/"):
@@ -191,16 +190,17 @@ def transform_image(file: UploadFile, depth: int = 100, tolerance: float = 2.5) 
         # Convert the bytes into a NumPy array
         np_array = np.frombuffer(file_bytes, np.uint8)
 
-        # Decode the image using OpenCV
+        # Decode the image as grayscale using OpenCV
         image = cv2.imdecode(np_array, cv2.IMREAD_GRAYSCALE)
         if image is None:
             raise HTTPException(status_code=400, detail="Failed to decode the image. Please upload a valid image file.")
 
-        # Process the image (example: convert to binary)
+        # Convert to binary image (black and white) using a threshold
         _, binary_image = cv2.threshold(image, 128, 255, cv2.THRESH_BINARY)
 
-        mesh = spaghetti_image_to_trimesh(binary_image, voxel_size=4.0, extrusion_height=depth)
-
+        # Create a 3D mesh from the binary image
+        mesh = image_to_trimesh(binary_image, cuboid_size, extrusion_height=depth)
+        
         # Create an STL file in memory
         stl_io = io.BytesIO()
         mesh.export(file_obj=stl_io, file_type='stl')
@@ -212,7 +212,10 @@ def transform_image(file: UploadFile, depth: int = 100, tolerance: float = 2.5) 
 
 @app.get("/api")
 def read_root():
-    return {"Hello": "World /"}
+    return {
+        "Prompt": "This is a simple application that will render a 2-d black and "
+                  "white image as a 3-d STL file."
+    }
 
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
@@ -220,25 +223,20 @@ async def upload_file(file: UploadFile = File(...)):
         xformfilename = file.filename.rsplit('.', 1)[0] + '_xform.stl'
 
         file.file.seek(0)
-        stl_io = transform_image(file, 100, 0.5)
+        stl_io = transform_image(file, 100, 4)
 
         if not stl_io:
             raise ValueError("transform_image returned None")
 
+        # Upload the original and transformed files to S3
         file.file.seek(0)
         s3.upload_fileobj(file.file, "aquaimages-thunkingspot", file.filename)
-
-        logger.debug(f"STL buffer size before seek: {stl_io.getbuffer().nbytes}")
         stl_io.seek(0)
-        # Create a copy of the BytesIO object
         stl_io_copy = io.BytesIO(stl_io.getvalue())
-        logger.debug(f"STL buffer size after seek: {stl_io.getbuffer().nbytes}")
         s3.upload_fileobj(stl_io, "aquaimages-thunkingspot", xformfilename)
 
         # Return the transformed file as a streaming response
-        logger.debug(f"STL buffer size before seek: {stl_io_copy.getbuffer().nbytes}")
         stl_io_copy.seek(0)
-        logger.debug(f"STL buffer size after seek: {stl_io_copy.getbuffer().nbytes}")
         response = StreamingResponse(
             stl_io_copy, 
             media_type="application/vnd.ms-pki.stl", 
@@ -247,6 +245,8 @@ async def upload_file(file: UploadFile = File(...)):
         return response
     except (BotoCoreError, ClientError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException as e:
+        raise e
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
