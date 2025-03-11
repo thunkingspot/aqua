@@ -22,15 +22,15 @@ if [ "$(sudo docker ps -q)" ]; then
 fi
 sudo docker image prune -f || true
 
-# Load the Docker image
-sudo docker load -i $DOCKER_IMAGE
-
 # Setup log directory
 if [ ! -d /var/log/aqua_app ]; then
   sudo mkdir -p /var/log/aqua_app
   sudo chown -R ubuntu:ubuntu /var/log/aqua_app
   sudo chmod -R 755 /var/log/aqua_app
 fi
+
+# Load the Docker image
+sudo docker load -i $DOCKER_IMAGE
 
 # Create a systemd service to autostart the Docker container
 echo "[Unit]
