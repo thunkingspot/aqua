@@ -21,13 +21,9 @@ echo "DEBUG_MODE: $DEBUG_MODE"
 
 # Transfer the Docker image to the AWS instance
 sudo scp -i $AWS_KEY_PATH $STAGE_DIR/$CONTAINER_NAME.tar $AWS_INSTANCE_USER@$AWS_INSTANCE_IP:/home/$AWS_INSTANCE_USER/
-#green sudo scp -i /home/ubuntu/.ssh/aqua-key2.pem aqua-app.tar ubuntu@10.0.147.201:/home/ubuntu/
-#blue sudo scp -i /home/ubuntu/.ssh/aqua-key2.pem aqua-app.tar ubuntu@10.0.138.20:/home/ubuntu/
 
 # Transfer the deploy-remote-container.sh script to the AWS instance
 sudo scp -i $AWS_KEY_PATH $STAGE_DIR/$REPO_MGT_DIR/deploy-remote-container.sh $AWS_INSTANCE_USER@$AWS_INSTANCE_IP:/home/$AWS_INSTANCE_USER/
-#green sudo scp -i /home/ubuntu/.ssh/aqua-key2.pem ./mgt/deploy-remote-container.sh ubuntu@10.0.147.201:/home/ubuntu/
-#blue sudo scp -i /home/ubuntu/.ssh/aqua-key2.pem ./mgt/deploy-remote-container.sh ubuntu@10.0.138.20:/home/ubuntu/
 
 # Run the deploy-remote-container.sh script on the AWS instance
 sudo ssh -i $AWS_KEY_PATH $AWS_INSTANCE_USER@$AWS_INSTANCE_IP << EOF
