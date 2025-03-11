@@ -26,7 +26,7 @@ sudo docker image prune -f || true
 if [ ! -d /var/log/aqua_app ]; then
   sudo mkdir -p /var/log/aqua_app
   sudo chown -R ubuntu:ubuntu /var/log/aqua_app
-  sudo chmod -R 755 /var/log/aqua_app
+  sudo chmod -R 766 /var/log/aqua_app
 fi
 
 # Load the Docker image

@@ -27,7 +27,7 @@ import debugpy
 import os
 
 # Log directory created during deployment exists
-log_directory = '/var/log/aqua_app'
+#log_directory = '/var/log/aqua_app'
 
 # Configure logging to output to console and file
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -36,7 +36,7 @@ console_handler = logging.StreamHandler()
 console_handler.setFormatter(log_formatter)
 
 file_handler = RotatingFileHandler(
-    os.path.join(log_directory, 'app.log'), maxBytes=5*1024*1024, backupCount=3  # 5 MB per file, 3 backup files
+    os.path.join('app.log'), maxBytes=5*1024*1024, backupCount=3  # 5 MB per file, 3 backup files
 )
 file_handler.setFormatter(log_formatter)
 
