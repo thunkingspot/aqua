@@ -22,12 +22,30 @@ import cv2
 import numpy as np
 import trimesh
 import logging
+from logging.handlers import RotatingFileHandler
 import debugpy
 import os
 
-# Configure logging to output to console
-logging.basicConfig(level=logging.DEBUG)
+# Log directory created during deployment exists
+log_directory = '/var/log/aqua_app'
+
+# Configure logging to output to console and file
+log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+
+file_handler = RotatingFileHandler(
+    os.path.join(log_directory, 'app.log'), maxBytes=5*1024*1024, backupCount=3  # 5 MB per file, 3 backup files
+)
+file_handler.setFormatter(log_formatter)
+
+logging.basicConfig(level=logging.DEBUG, handlers=[console_handler, file_handler])
 logger = logging.getLogger(__name__)
+
+# Set boto3 and botocore logging level to WARNING to prevent logging sensitive information
+logging.getLogger('boto3').setLevel(logging.WARNING)
+logging.getLogger('botocore').setLevel(logging.WARNING)
 
 # Create a FastAPI app
 app = FastAPI()
@@ -185,6 +203,7 @@ def transform_image(file: UploadFile, depth: int = 100, cuboid_size: int = 1) ->
             raise HTTPException(status_code=400, detail="Uploaded file must be an image.")
         
         # Read the file into memory
+        logger.debug(f"Reading file: {str(file.filename)}")
         file_bytes = file.file.read()
 
         # Convert the bytes into a NumPy array
@@ -199,9 +218,11 @@ def transform_image(file: UploadFile, depth: int = 100, cuboid_size: int = 1) ->
         _, binary_image = cv2.threshold(image, 128, 255, cv2.THRESH_BINARY)
 
         # Create a 3D mesh from the binary image
+        logger.debug(f"Extruding file: {str(file.filename)}")
         mesh = image_to_trimesh(binary_image, cuboid_size, extrusion_height=depth)
         
         # Create an STL file in memory
+        logger.debug(f"Converting to STL: {str(file.filename)}")
         stl_io = io.BytesIO()
         mesh.export(file_obj=stl_io, file_type='stl')
         stl_io.seek(0)
