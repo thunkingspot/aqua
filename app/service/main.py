@@ -27,7 +27,9 @@ import debugpy
 import os
 
 # Log directory created during deployment exists
-#log_directory = '/var/log/aqua_app'
+log_directory = './log'
+if not os.path.exists(log_directory):
+    os.makedirs(log_directory)
 
 # Configure logging to output to console and file
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
