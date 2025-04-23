@@ -19,8 +19,9 @@ from contextlib import contextmanager
 from fastapi import File, HTTPException
 from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
-from app.service.main import app, transform_image
+from app.service.main import app, transform_image, generate_stl, generate_thumbnail
 from PIL import Image
+import trimesh
 
 # Create a mock image for testing - a black square in the center of a white background
 def create_mock_simple_png_image(edge_length: int=15, square_size: int=5):
@@ -93,32 +94,21 @@ def test_transform_image_success():
         content=create_mock_simple_png_image(image_size, square_size))
 
     # Call the transform_image function with the mocked file
-    result = transform_image(mock_file, extruded_depth, voxel_size)
+    mesh = transform_image(mock_file, extruded_depth, voxel_size)
 
     # Assert that the result is not None and is an instance of io.BytesIO
-    assert result is not None
-    assert isinstance(result, io.BytesIO)
-
-    stl_content = result.getvalue()
-
-    # Assert that the content of the result is as expected
-    # Check for the presence of the binary STL header (80 bytes) and triangle count (4 bytes)
-    assert len(stl_content) > 84  # Header (80 bytes) + Triangle count (4 bytes)
-    header = stl_content[:80]
-    triangle_count = struct.unpack('<I', stl_content[80:84])[0]
-
-    # Print the header and triangle count for debugging
-    # print(f"Header: {header}")
-    # print(f"Triangle count: {triangle_count}")
+    assert mesh is not None
+    assert isinstance(mesh, trimesh.Trimesh)
 
     # A square size of 5 with a voxel size of 5 should result in one voxel
     # with 6 faces and 2 triangles per face
+    triangle_count = len(mesh.faces)
     assert triangle_count == 12
 
-# Test the transform_image function with multiple voxels
-def test_transform_image_success_multiple_voxels():
+# Test the transform_image function with multiple cuboids
+def test_transform_image_success_multiple_cuboids():
     # should still produce 6 faces and 2 triangles per face even though
-    # there are multiple voxels
+    # there are multiple cuboids
     image_size = 15
     square_size = 10
     extruded_depth = 5
@@ -131,25 +121,10 @@ def test_transform_image_success_multiple_voxels():
         content=create_mock_simple_png_image(image_size, square_size))
 
     # Call the transform_image function with the mocked file
-    result = transform_image(mock_file, extruded_depth, voxel_size)
-
-    # Assert that the result is not None and is an instance of io.BytesIO
-    assert result is not None
-    assert isinstance(result, io.BytesIO)
-
-    stl_content = result.getvalue()
-
-    # Assert that the content of the result is as expected
-    # Check for the presence of the binary STL header (80 bytes) and triangle count (4 bytes)
-    assert len(stl_content) > 84  # Header (80 bytes) + Triangle count (4 bytes)
-    header = stl_content[:80]
-    triangle_count = struct.unpack('<I', stl_content[80:84])[0]
-
-    # Print the header and triangle count for debugging
-    print(f"Header: {header}")
-    print(f"Triangle count: {triangle_count}")
+    mesh = transform_image(mock_file, extruded_depth, voxel_size)
 
     # 6 faces and 2 triangles per face
+    triangle_count = len(mesh.faces)
     assert triangle_count == 12
 
 def test_transform_image_success_spaghetti():
@@ -168,26 +143,14 @@ def test_transform_image_success_spaghetti():
         content=create_mock_complex_png_image(image_size, diameter, stroke_width))
 
     # Call the transform_image function with the mocked file
-    result = transform_image(mock_file, extruded_depth, voxel_size)
+    mesh = transform_image(mock_file, extruded_depth, voxel_size)
 
     # Assert that the result is not None and is an instance of io.BytesIO
-    assert result is not None
-    assert isinstance(result, io.BytesIO)
-
-    stl_content = result.getvalue()
-
-    # Assert that the content of the result is as expected
-    # Check for the presence of the binary STL header (80 bytes) and triangle count (4 bytes)
-    assert len(stl_content) > 84  # Header (80 bytes) + Triangle count (4 bytes)
-    header = stl_content[:80]
-    triangle_count = struct.unpack('<I', stl_content[80:84])[0]
-
-    # Print the header and triangle count for debugging
-    print(f"Header: {header}")
-    print(f"Triangle count: {triangle_count}")
+    assert mesh is not None
 
     # ad hoc derived assertion - it will tell us if changes to the algorithm
     # change the behavior of the function
+    triangle_count = len(mesh.faces)
     assert triangle_count == 132
 
 # Test the transform_image function with an invalid image
@@ -216,32 +179,108 @@ def test_transform_image_invalid_image_decode():
 
 client = TestClient(app)
 
+# Test generating a thumbnail image of the 3d mesh
+def test_generate_thumbnail():
+    # should produce single voxel with 6 faces and 2 triangles per face
+    image_size = 15
+    square_size = 5
+    extruded_depth = 5
+    voxel_size = 5
+
+    # Mock the file read method to return the image content
+    mock_file = create_mock_uploaded_file(
+        filename="test.png",
+        type="image/png",
+        content=create_mock_simple_png_image(image_size, square_size))
+
+    # Call the transform_image function with the mocked file
+    mesh = transform_image(mock_file, extruded_depth, voxel_size)
+
+    # Assert that the result is not None and is an instance of io.BytesIO
+    assert mesh is not None
+
+    # ad hoc derived assertion - it will tell us if changes to the algorithm
+    # change the behavior of the function
+    triangle_count = len(mesh.faces)
+    assert triangle_count == 12
+
+    thumbnail = generate_thumbnail(mesh, 200, 200)
+
+    # Assert that the thumbnail is not None and is an instance of io.BytesIO
+    assert thumbnail is not None
+    assert isinstance(thumbnail, io.BytesIO)
+
+    # Assert that the thumbnail is a PNG image
+    thumbnail_image = Image.open(thumbnail)
+    assert thumbnail_image.format == "PNG"
+
+# Test generating an stl file from the 3d mesh
+def test_generate_stl():
+    # should produce single voxel with 6 faces and 2 triangles per face
+    image_size = 15
+    square_size = 5
+    extruded_depth = 5
+    voxel_size = 5
+
+    # Mock the file read method to return the image content
+    mock_file = create_mock_uploaded_file(
+        filename="test.png",
+        type="image/png",
+        content=create_mock_simple_png_image(image_size, square_size))
+
+    # Call the transform_image function with the mocked file
+    mesh = transform_image(mock_file, extruded_depth, voxel_size)
+
+    # Generate an stl file from the 3d mesh
+    stl = generate_stl(mesh)
+
+    # Assert that the stl is not None and is an instance of io.BytesIO
+    assert stl is not None
+    assert isinstance(stl, io.BytesIO)
+
+    stl_content = stl.getvalue()
+
+    # Assert that the content of the stl is as expected
+    # Check for the presence of the binary STL header (80 bytes) and triangle count (4 bytes)
+    assert len(stl_content) > 84  # Header (80 bytes) + Triangle count (4 bytes)
+    header = stl_content[:80]
+    triangle_count = struct.unpack('<I', stl_content[80:84])[0]
+
+    # Print the header and triangle count for debugging
+    # print(f"Header: {header}")
+    # print(f"Triangle count: {triangle_count}")
+
+    # A square size of 5 with a voxel size of 5 should result in one voxel
+    # with 6 faces and 2 triangles per face
+    assert triangle_count == 12
+
 # Test @app.get("/api") from main.py
 def test_read_root():
     response = client.get("/api")
     assert response.status_code == 200
-    assert response.json() == {"Hello": "World /"}
+    assert "3-d mesh" in response.json().get("Prompt", "")
 
 # Test @app.post("/api/upload") from main.py - happy path
-# mock S3 and transform_image method and stl_io.getvalue()
+# mock S3 and transform methods and stl_io.getvalue()
 @patch('app.service.main.s3.upload_fileobj')
 @patch('app.service.main.transform_image')
-def test_upload_file(mock_transform_image, mock_upload_fileobj):
-    mock_stl_io = Mock()
-    mock_stl_io.getvalue.return_value = b"mocked stl content"
-    mock_transform_image.return_value = mock_stl_io
-    mock_upload_fileobj.return_value = None
-    response = client.post("/api/upload", files={"file": ("test.jpg", b"test")})
+@patch('app.service.main.generate_stl')
+@patch('app.service.main.generate_thumbnail')
+def test_upload_file(mock_generate_thumbnail, mock_generate_stl, mock_transform_image, mock_upload_fileobj):
+    mock_generate_thumbnail.return_value = io.BytesIO(b"mocked thumbnail content")
+    mock_transform_image.return_value = Mock()
+    mock_transform_image.return_value.getvalue.return_value = b"mocked mesh content"
+    mock_generate_stl.return_value = io.BytesIO(b"mocked stl content")
+    response = client.post("/api/upload", files={"file": ("test.png", b"test")})
     assert response.status_code == 200
-    assert response.headers["Content-Disposition"] == "attachment; filename=test_xform.stl"
-    assert response.headers["Content-Type"] == "application/vnd.ms-pki.stl"
-    assert response.content == b"mocked stl content"
-
+    assert response.headers["Content-Type"] == "image/png"
+    assert response.content == b"mocked thumbnail content"
+    
 # Test @app.post("/api/upload") from main.py - transform_image returns None
 @patch('app.service.main.transform_image')
 def test_upload_file_transform_image_none(mock_transform_image):
     mock_transform_image.return_value = None
-    response = client.post("/api/upload", files={"file": ("test.jpg", b"test")})
+    response = client.post("/api/upload", files={"file": ("test.png", b"test")})
     assert response.status_code == 500
     assert "None" in response.json()["detail"]
 
@@ -259,7 +298,7 @@ def test_upload_file_invalid_image(mock_transform_image):
 def test_upload_file_s3_error(mock_transform_image, mock_upload_fileobj):
     mock_transform_image.return_value = Mock()
     mock_upload_fileobj.side_effect = ClientError({"Error": {"Code": "500", "Message": "mock msg"}}, "upload_fileobj")
-    response = client.post("/api/upload", files={"file": ("test.jpg", b"test")})
+    response = client.post("/api/upload", files={"file": ("test.png", b"test")})
     assert response.status_code == 400
     assert "500" in response.json()["detail"]
     assert "mock msg" in response.json()["detail"]
@@ -270,7 +309,43 @@ def test_upload_file_s3_error(mock_transform_image, mock_upload_fileobj):
 def test_upload_file_unexpected_error(mock_transform_image, mock_upload_fileobj):
     mock_transform_image.return_value = Mock()
     mock_upload_fileobj.side_effect = Exception("Unexpected error")
-    response = client.post("/api/upload", files={"file": ("test.jpg", b"test")})
+    response = client.post("/api/upload", files={"file": ("test.png", b"test")})
     assert response.status_code == 500
     assert response.json() == {"detail": "Unexpected error"}
 
+# Test @app.post("/api/download") from main.py - happy path
+@patch('app.service.main.s3.download_fileobj')
+def test_download_file(mock_download_fileobj):
+    mock_download_fileobj.side_effect = lambda Bucket, Key, Fileobj: \
+        Fileobj.write(b"mocked stl content")
+    response = client.get("/api/download/test.png")
+    assert response.status_code == 200
+    assert response.headers["Content-Disposition"] == "attachment; filename=test_xform.stl"
+    assert response.headers["Content-Type"] == "application/vnd.ms-pki.stl"
+    assert response.content == b"mocked stl content"
+
+# Test @app.get("/api/download/{filename}") from main.py - file not found
+@patch('app.service.main.s3.download_fileobj')
+def test_download_file_not_found(mock_download_fileobj):
+    mock_download_fileobj.side_effect = ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "download_fileobj")
+    response = client.get("/api/download/test.png")
+    assert response.status_code == 400
+    assert "404" in response.json()["detail"]
+    assert "Not Found" in response.json()["detail"]
+
+# Test @app.get("/api/download/{filename}") from main.py - s3 download error
+@patch('app.service.main.s3.download_fileobj')
+def test_download_file_s3_error(mock_download_fileobj):
+    mock_download_fileobj.side_effect = ClientError({"Error": {"Code": "500", "Message": "mock msg"}}, "download_fileobj")
+    response = client.get("/api/download/test.png")
+    assert response.status_code == 400
+    assert "500" in response.json()["detail"]
+    assert "mock msg" in response.json()["detail"]
+
+# Test @app.get("/api/download/{filename}") from main.py - unexpected error
+@patch('app.service.main.s3.download_fileobj')
+def test_download_file_unexpected_error(mock_download_fileobj):
+    mock_download_fileobj.side_effect = Exception("Unexpected error")
+    response = client.get("/api/download/test.png")
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Unexpected error"}

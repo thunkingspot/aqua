@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import os
+import sys
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 import boto3
@@ -20,11 +21,15 @@ from botocore.exceptions import BotoCoreError, ClientError
 import io
 import cv2
 import numpy as np
+import scipy
 import trimesh
+import moderngl
+from PIL import Image
+from pyrr import Matrix44
+import base64
 import logging
 from logging.handlers import RotatingFileHandler
 import debugpy
-import os
 
 # Log directory created during deployment exists
 log_directory = './log'
@@ -183,9 +188,26 @@ def image_to_trimesh(binary_image, cuboid_size, extrusion_height):
 
     # Merge all cuboids into a single mesh
     combined_mesh = trimesh.util.concatenate(cuboids)
-    # Attempt to remove duplicate internal faces (unclear if this is effective)
-    combined_mesh.merge_vertices()
-    combined_mesh.update_faces(combined_mesh.unique_faces())
+    
+    # Merge vertices that are at the same position with higher precision
+    combined_mesh.merge_vertices(digits_vertex=8)  # Higher precision for better merging
+    
+    # Process the mesh to ensure proper topology
+    combined_mesh.process(validate=True)
+    
+    # Fix normal directions and recalculate them
+    combined_mesh.fix_normals(multibody=True)
+    combined_mesh.vertex_normals = trimesh.geometry.mean_vertex_normals(
+        len(combined_mesh.vertices),
+        combined_mesh.faces,
+        combined_mesh.face_normals,
+        weight='area'
+    )
+    
+    # Update the mesh with all vertices
+    vertex_mask = np.ones(len(combined_mesh.vertices), dtype=bool)
+    combined_mesh.update_vertices(vertex_mask)
+    combined_mesh.update_faces(np.ones(len(combined_mesh.faces), dtype=bool))
 
     return combined_mesh
 
@@ -222,31 +244,234 @@ def transform_image(file: UploadFile, depth: int = 100, cuboid_size: int = 1) ->
         # Create a 3D mesh from the binary image
         logger.debug(f"Extruding file: {str(file.filename)}")
         mesh = image_to_trimesh(binary_image, cuboid_size, extrusion_height=depth)
-        
-        # Create an STL file in memory
-        logger.debug(f"Converting to STL: {str(file.filename)}")
-        stl_io = io.BytesIO()
-        mesh.export(file_obj=stl_io, file_type='stl')
-        stl_io.seek(0)
-        return stl_io
+        return mesh
     
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+"""
+Generate an stil file in memory from a 3d mesh object.
+Args:
+    mesh (trimesh.Trimesh): The 3d mesh object.
+Returns:
+    io.BytesIO: The STL file.
+"""
+def generate_stl(mesh):
+    # Create an STL file in memory
+    stl_io = io.BytesIO()
+    mesh.export(file_obj=stl_io, file_type='stl')
+    stl_io.seek(0)
+    return stl_io
+
+"""
+Generate a thumbnail of the 3d mesh object.
+The thumbnail is a 2d image of the mesh object shown from a 3/4 perspective.
+Args:
+    mesh (trimesh.Trimesh): The 3d mesh object.
+    width (int): Width of the thumbnail image.
+    height (int): Height of the thumbnail image.
+Returns:
+    io.BytesIO: The thumbnail image file.
+"""
+def generate_thumbnail(mesh, width=640, height=480):
+    mesh.rezero()
+    
+    # Calculate scaling factor to normalize mesh size
+    size = mesh.bounds[1] - mesh.bounds[0]
+    max_dimension = np.max(size)
+    scale_factor = 10.0 / max_dimension  # Normalize to 10 units
+    
+    # Create a scaled copy of the mesh
+    scaled_mesh = mesh.copy()
+    scaled_mesh.apply_scale(scale_factor)
+
+    # Load trimesh mesh and extract geometry
+    vertices = np.array(scaled_mesh.vertices, dtype=np.float32)
+    faces = np.array(scaled_mesh.faces, dtype=np.uint32).flatten()
+    normals = np.array(scaled_mesh.vertex_normals, dtype=np.float32)
+
+    # Create an offscreen context.
+    # ModernGL can create a context for offscreen rendering using its standalone Context.
+    ctx = moderngl.create_standalone_context()
+
+    # Create a framebuffer.
+    fbo = ctx.simple_framebuffer((width, height))
+    fbo.use()
+
+    # Define vertex and fragment shaders for ModernGL.
+    # For OpenGL ES 3.2 or OpenGL 3.3 compatibility, you might use modern GLSL.
+    vertex_shader_src = '''
+    #version 330
+    in vec3 in_position;
+    in vec3 in_normal;
+    uniform mat4 mvp;
+    uniform mat4 model;
+    out vec3 frag_normal;
+    out vec3 frag_position;
+    void main() {
+        frag_normal = mat3(transpose(inverse(model))) * in_normal;
+        frag_position = vec3(model * vec4(in_position, 1.0));
+        gl_Position = mvp * vec4(in_position, 1.0);
+    }
+    '''
+
+    fragment_shader_src = '''
+    #version 330
+    in vec3 frag_normal;
+    in vec3 frag_position;
+    out vec4 fragColor;
+    uniform vec3 light_position;
+    uniform vec3 view_position;
+    void main() {
+        // Normalize the normal vector
+        vec3 normal = normalize(frag_normal);
+
+        // Calculate the light direction and distance
+        vec3 light_dir = normalize(light_position - frag_position);
+        float light_distance = length(light_position - frag_position);
+        
+        // Softer falloff for area light simulation
+        float falloff = 1.0 / (1.0 + 0.01 * light_distance * light_distance);  // Reduced falloff coefficient
+        
+        // Calculate the view direction
+        vec3 view_dir = normalize(view_position - frag_position);
+
+        // Calculate the reflection direction with softening
+        vec3 reflect_dir = reflect(-light_dir, normal);
+        float spread = 0.01;
+        reflect_dir = normalize(reflect_dir + spread * (view_dir - reflect_dir));
+
+        // Calculate the ambient, diffuse, and specular components
+        float ambient_strength = 0.25;  // Increased ambient light
+        vec3 ambient = ambient_strength * vec3(1.0, 1.0, 1.0);
+
+        // Very soft diffuse falloff
+        float diff = pow(max(dot(normal, light_dir), 0.0), 0.9);
+        vec3 diffuse = diff * vec3(8.0, 8.0, 8.0) * falloff;  // Increased diffuse intensity
+
+        // Much wider specular highlights
+        float specular_strength = 2.1;  // Increased specular intensity
+        float spec = pow(max(dot(view_dir, reflect_dir), 0.0), 10.0);
+        vec3 specular = specular_strength * spec * vec3(1.8, 1.8, 1.8) * falloff;
+
+        // Combine the components with smooth transition and increased overall brightness
+        vec3 result = (ambient + diffuse + specular) * vec3(0.2, 0.8, 0.6);  // Increased base color intensity
+        fragColor = vec4(result, 1.0);
+    }
+    '''
+
+    # Compile the shader program.
+    prog = ctx.program(
+        vertex_shader=vertex_shader_src,
+        fragment_shader=fragment_shader_src,
+    )
+
+    # Create a Vertex Buffer Object (VBO) for the vertex data.
+    vbo = ctx.buffer(vertices.tobytes())
+
+    # Create a Vertex Buffer Object (VBO) for the normal data.
+    nbo = ctx.buffer(normals.tobytes())
+
+    # Create an Element Buffer Object (EBO) for the indices.
+    ebo = ctx.buffer(faces.tobytes())
+
+    # Define the format for the vertex attributes.
+    vao_content = [
+        # Format: (buffer, 'format string', 'attribute name')
+        (vbo, '3f', 'in_position'),
+        (nbo, '3f', 'in_normal'),
+    ]
+
+    # Create a Vertex Array Object (VAO) binding the VBO and the shader program.
+    vao = ctx.vertex_array(prog, vao_content, ebo)
+
+    # Calculate the bounding box of the mesh
+    bounding_box = scaled_mesh.bounds
+    center = bounding_box.mean(axis=0)
+    size = bounding_box[1] - bounding_box[0]
+
+    # Set the camera position for a consistent 3/4 view
+    diagonal = np.linalg.norm(size)  # Get the diagonal length
+    camera_distance = diagonal * 1.0  # Use diagonal for consistent distance
+    eye = center + np.array([1.0, 1.0, 0.8]) * camera_distance  # Fixed ratio for 3/4 view
+
+    # Adjust near and far clipping planes based on the diagonal
+    near_plane = camera_distance * 0.01
+    far_plane = camera_distance * 4.0
+
+    # Set up the Model-View-Projection (MVP) matrix
+    view = Matrix44.look_at(
+        eye=eye,
+        target=center,
+        up=np.array([0, 0, 1])
+    )
+
+    projection = Matrix44.perspective_projection(45, width / height, near_plane, far_plane)
+    model = Matrix44.identity()
+    mvp = projection * view * model
+    prog['mvp'].write(mvp.astype('f4').tobytes())
+    prog['model'].write(model.astype('f4').tobytes())
+
+    # Calculate light position based on object size
+    light_scale = np.linalg.norm(size) * 0.75  # Scale factor for light position
+    light_position = eye + np.array([light_scale, light_scale * 0.7, light_scale * 0.7])
+    prog['light_position'].write(light_position.astype('f4').tobytes())
+    prog['view_position'].write(eye.astype('f4').tobytes())
+
+    # Clear the framebuffer and render the scene.
+    ctx.clear(1.0, 1.0, 1.0, 1.0)  # clear to white
+    vao.render()
+
+    # Read the framebuffer into a numpy array.
+    pixel_data = fbo.read(components=4, alignment=1)
+
+    # Read pixels from the FBO
+    image = Image.frombytes("RGBA", (width, height), pixel_data)
+
+    # OpenGL's origin is bottom-left; flip the image vertically.
+    image = image.transpose(Image.FLIP_TOP_BOTTOM)
+
+    # Save the image to a file (for debugging)
+    image.save("/home/ubuntu/Downloads/thumbnail.png")
+
+    # Convert the image to a bytes stream
+    image_io = io.BytesIO()
+    image.save(image_io, format='PNG')
+    image_io.seek(0)
+    return image_io
+
+"""
+Root endpoint that provides a simple description of the API.
+"""
 @app.get("/api")
 def read_root():
     return {
         "Prompt": "This is a simple application that will render a 2-d black and "
-                  "white image as a 3-d STL file."
+                  "white image as a 3-d mesh by extruding the image to a given depth."
     }
 
+"""
+Upload endpoint that accepts an image file creates a 3-d mesh from an "extrusion" of the image.
+Args:
+    file (UploadFile): The uploaded image file.
+Returns:
+    StreamingResponse: The thumbnail image file.
+Side Effects:
+    Uploads the original and transformed files to an S3 bucket
+    with names of the form "<filename>.png" and "<filename>_xform.stl".
+"""
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
     try:
         xformfilename = file.filename.rsplit('.', 1)[0] + '_xform.stl'
 
         file.file.seek(0)
-        stl_io = transform_image(file, 100, 4)
+        logger.debug(f"Generating 3d mesh: {str(file.filename)}")
+        mesh = transform_image(file, 100, 4)
+        logger.debug(f"Converting to STL: {str(file.filename)}")
+        stl_io = generate_stl(mesh)
+        logger.debug(f"Generating thumbnail: {str(file.filename)}")
+        thumbnail = generate_thumbnail(mesh)
 
         if not stl_io:
             raise ValueError("transform_image returned None")
@@ -258,14 +483,44 @@ async def upload_file(file: UploadFile = File(...)):
         stl_io_copy = io.BytesIO(stl_io.getvalue())
         s3.upload_fileobj(stl_io, "aquaimages-thunkingspot", xformfilename)
 
-        # Return the transformed file as a streaming response
-        stl_io_copy.seek(0)
-        response = StreamingResponse(
-            stl_io_copy, 
+        # Convert the thumbnail image to a base64-encoded string
+        thumbnail.seek(0)
+        base64_thumbnail = base64.b64encode(thumbnail.read()).decode('utf-8')
+
+        # Return the base64-encoded image as a JSON response
+        return {"thumbnail": base64_thumbnail}
+    except (BotoCoreError, ClientError) as e:
+        logger.error(f"Boto3 error: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException as e:
+        logger.error(f"HTTP error: {str(e)}")
+        raise e
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+"""
+Download the STL file from s3 associated with the given filename of the originally
+transformed 2-d image.
+Args:
+    filename (str): The filename of the original 2-d image.
+Returns:
+    StreamingResponse: The STL file.
+"""
+@app.get("/api/download/{filename}")
+def download_stl(filename: str):
+    try:
+        xformfilename = filename.rsplit('.', 1)[0] + '_xform.stl'
+        logger.debug(f"Downloading file: {xformfilename}")
+        stl_io = io.BytesIO()
+        s3.download_fileobj("aquaimages-thunkingspot", xformfilename, stl_io)
+        stl_io.seek(0)
+        return StreamingResponse(
+            stl_io, 
             media_type="application/vnd.ms-pki.stl", 
             headers={"Content-Disposition": f"attachment; filename={xformfilename}"}
         )
-        return response
+   
     except (BotoCoreError, ClientError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException as e:
@@ -273,3 +528,4 @@ async def upload_file(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+

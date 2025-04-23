@@ -11,7 +11,8 @@ COPY . /approot
 RUN pip install --no-cache-dir -r app/service/requirements.txt
 
 # Install additional dependencies
-RUN apt-get update && apt-get install -y nginx libgl1-mesa-glx libglib2.0-0
+RUN apt-get update && apt-get install -y nginx libgl1-mesa-glx libglib2.0-0 libegl1-mesa-dev libgles2-mesa-dev mesa-common-dev
+#RUN apt-get update && apt-get install -y nginx libgl1-mesa-glx libglib2.0-0 libosmesa6-dev
 
 # Copy main Nginx configuration file
 COPY appinfra/nginx.conf /etc/nginx/nginx.conf

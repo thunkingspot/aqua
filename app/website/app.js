@@ -48,31 +48,74 @@ document.getElementById('uploadFile').addEventListener('change', async (event) =
         throw new Error('Network response was not ok');
       }
 
-      // Handle the response as a Blob
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.style.display = 'none';
-      a.href = url;
+      // Handle the response as JSON
+      const data = await response.json();
+      console.log('Response data:', data); // Debugging: Log the response data to the console
 
-      // Extract the filename from the Content-Disposition header
-      const contentDisposition = response.headers.get('Content-Disposition');
-      let fileName = 'downloaded_file.stl';
-      if (contentDisposition) {
-        const match = contentDisposition.match(/filename="?(.+)"?/);
-        if (match && match[1]) {
-          fileName = match[1];
-        }
+      // Create an image element to display the thumbnail
+      const img = document.createElement('img');
+      img.src = 'data:image/png;base64,' + data.thumbnail;
+      img.alt = 'Thumbnail Image';
+      img.style.maxWidth = '100%';
+      img.style.height = 'auto';
+
+      // Add an event listener to log errors if the image fails to load
+      img.onerror = (error) => {
+        console.error('Error loading image:', error); // Debugging: Log the error
+      };
+      
+      // Append the image to a container element
+      const thumbnailContainer = document.getElementById('thumbnailContainer');
+      if (thumbnailContainer) {
+        thumbnailContainer.innerHTML = ''; // Clear any existing content
+        thumbnailContainer.appendChild(img);
+        console.log('Thumbnail image appended to container'); // Debugging: Log the success
+      } else {
+        console.error('Thumbnail container not found'); // Debugging: Log the error
       }
 
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.getElementById('uploadStatus').innerText = 'File transformed and downloaded successfully';
+      // Store the STL filename in a data attribute on the download button
+      const downloadButton = document.getElementById('downloadSTL');
+      downloadButton.dataset.filename = file.name;
+      downloadButton.style.display = 'block'; // Show the download button
+
+      document.getElementById('uploadStatus').innerText = 'Thumbnail image displayed successfully';
     } catch (error) {
       console.error('Error uploading file:', error);
       document.getElementById('uploadStatus').innerText = 'Error uploading file';
     }
+  }
+});
+
+// Add an event listener for the download button
+document.getElementById('downloadSTL').addEventListener('click', async () => {
+  const downloadButton = document.getElementById('downloadSTL');
+  const imageFileName = downloadButton.dataset.filename;
+
+  if (imageFileName) {
+      try {
+          const stlResponse = await fetch(`/api/download/${imageFileName}`);
+          if (!stlResponse.ok) {
+              throw new Error('Network response was not ok');
+          }
+          const stlBlob = await stlResponse.blob();
+
+          // Create a download link for the STL file
+          const stlUrl = URL.createObjectURL(stlBlob);
+          const a = document.createElement('a');
+          a.href = stlUrl;
+          const contentDisposition = stlResponse.headers.get('Content-Disposition');
+          const filename = contentDisposition ? contentDisposition.split('filename=')[1] : 'download.stl';
+          a.download = filename.replace(/"/g, ''); // Remove any surrounding quotes
+          a.click();
+          console.log('STL file saved to disk'); // Debugging: Log the success
+
+          // Clean up the object URL
+          URL.revokeObjectURL(stlUrl);
+      } catch (error) {
+          console.error('Error downloading STL file:', error);
+      }
+  } else {
+      console.error('STL filename not found');
   }
 });

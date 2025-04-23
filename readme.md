@@ -130,3 +130,4 @@ Aqua Demonstration App
   - stop container
     sudo docker stop <container_id> | <name>
 
+Debugging OpenGL headless EGL setup

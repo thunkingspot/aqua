@@ -2,8 +2,11 @@ fastapi
 uvicorn
 boto3
 numpy
+scipy
 python-multipart
 opencv-python
 trimesh
+pyrr
+moderngl
 Pillow
 debugpy
